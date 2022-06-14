@@ -24,6 +24,9 @@ from .workflow_instance import (
     WorkflowInstanceDetails,
     WorkflowRunner,
 )
+from .workflow_sandbox import (
+    SandboxedWorkflowRunner,
+)
 
 __all__ = [
     # Primary types
@@ -49,6 +52,7 @@ __all__ = [
     "SharedStateManager",
     "SharedHeartbeatSender",
     # Advanced workflow classes
+    "SandboxedWorkflowRunner",
     "WorkflowRunner",
     "WorkflowInstance",
     "WorkflowInstanceDetails",

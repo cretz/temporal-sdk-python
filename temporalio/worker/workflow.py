@@ -33,7 +33,7 @@ from .workflow_instance import WorkflowInstance, WorkflowInstanceDetails, Workfl
 logger = logging.getLogger(__name__)
 
 # Set to true to log all activations and completions
-LOG_PROTOS = False
+LOG_PROTOS = True
 
 
 class _WorkflowWorker:
