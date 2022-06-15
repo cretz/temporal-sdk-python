@@ -24,9 +24,7 @@ from .workflow_instance import (
     WorkflowInstanceDetails,
     WorkflowRunner,
 )
-from .workflow_sandbox import (
-    SandboxedWorkflowRunner,
-)
+from .workflow_sandbox import SandboxedWorkflowRunner
 
 __all__ = [
     # Primary types
