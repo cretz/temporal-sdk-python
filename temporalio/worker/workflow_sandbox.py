@@ -107,34 +107,56 @@ class SandboxRestrictions:
 
     default: ClassVar[SandboxRestrictions]
 
+    # These are set at the end of the file
     passthrough_modules_minimum: ClassVar[Patterns]
     passthrough_modules_with_temporal: ClassVar[Patterns]
     passthrough_modules_maximum: ClassVar[Patterns]
     passthrough_modules_default: ClassVar[Patterns]
 
 
+def self_and_children_pattern(parent: str) -> re.Pattern:
+    return re.compile(re.escape(parent) + r"(?:$|\..*)")
+
+
 SandboxRestrictions.passthrough_modules_minimum = [
     # Required due to https://github.com/protocolbuffers/protobuf/issues/10143
-    re.compile(r"google\.protobuf.*"),
-    re.compile(r"grpc*"),
+    self_and_children_pattern("google.protobuf"),
+    self_and_children_pattern("grpc"),
 ]
 
-# TODO(cretz): Fix to be bare minimum with the temporal packages included
 SandboxRestrictions.passthrough_modules_with_temporal = (
     SandboxRestrictions.passthrough_modules_minimum
+    # Due to Python checks on ABC class extension, we have to include all
+    # modules of classes we might extend
     + [
-        re.compile(r"asyncio*"),
-        re.compile(r"abc*"),
-        re.compile(r"temporalio*"),
+        self_and_children_pattern("asyncio"),
+        self_and_children_pattern("abc"),
+        self_and_children_pattern("temporalio"),
     ]
 )
-# TODO(cretz): Add many more imports
+
+# sys.stdlib_module_names is only available on 3.10+, so we hardcode here. A
+# test will fail if this list doesn't match the 3.10+ Python version it was
+# generated against, spitting out the expected list. This is a string instead
+# of a list of strings due to black wanting to format this to one item each
+# line in a list.
+_stdlib_module_names = "__future__,_abc,_aix_support,_ast,_asyncio,_bisect,_blake2,_bootsubprocess,_bz2,_codecs,_codecs_cn,_codecs_hk,_codecs_iso2022,_codecs_jp,_codecs_kr,_codecs_tw,_collections,_collections_abc,_compat_pickle,_compression,_contextvars,_crypt,_csv,_ctypes,_curses,_curses_panel,_datetime,_dbm,_decimal,_elementtree,_frozen_importlib,_frozen_importlib_external,_functools,_gdbm,_hashlib,_heapq,_imp,_io,_json,_locale,_lsprof,_lzma,_markupbase,_md5,_msi,_multibytecodec,_multiprocessing,_opcode,_operator,_osx_support,_overlapped,_pickle,_posixshmem,_posixsubprocess,_py_abc,_pydecimal,_pyio,_queue,_random,_scproxy,_sha1,_sha256,_sha3,_sha512,_signal,_sitebuiltins,_socket,_sqlite3,_sre,_ssl,_stat,_statistics,_string,_strptime,_struct,_symtable,_thread,_threading_local,_tkinter,_tracemalloc,_uuid,_warnings,_weakref,_weakrefset,_winapi,_zoneinfo,abc,aifc,antigravity,argparse,array,ast,asynchat,asyncio,asyncore,atexit,audioop,base64,bdb,binascii,binhex,bisect,builtins,bz2,cProfile,calendar,cgi,cgitb,chunk,cmath,cmd,code,codecs,codeop,collections,colorsys,compileall,concurrent,configparser,contextlib,contextvars,copy,copyreg,crypt,csv,ctypes,curses,dataclasses,datetime,dbm,decimal,difflib,dis,distutils,doctest,email,encodings,ensurepip,enum,errno,faulthandler,fcntl,filecmp,fileinput,fnmatch,fractions,ftplib,functools,gc,genericpath,getopt,getpass,gettext,glob,graphlib,grp,gzip,hashlib,heapq,hmac,html,http,idlelib,imaplib,imghdr,imp,importlib,inspect,io,ipaddress,itertools,json,keyword,lib2to3,linecache,locale,logging,lzma,mailbox,mailcap,marshal,math,mimetypes,mmap,modulefinder,msilib,msvcrt,multiprocessing,netrc,nis,nntplib,nt,ntpath,nturl2path,numbers,opcode,operator,optparse,os,ossaudiodev,pathlib,pdb,pickle,pickletools,pipes,pkgutil,platform,plistlib,poplib,posix,posixpath,pprint,profile,pstats,pty,pwd,py_compile,pyclbr,pydoc,pydoc_data,pyexpat,queue,quopri,random,re,readline,reprlib,resource,rlcompleter,runpy,sched,secrets,select,selectors,shelve,shlex,shutil,signal,site,smtpd,smtplib,sndhdr,socket,socketserver,spwd,sqlite3,sre_compile,sre_constants,sre_parse,ssl,stat,statistics,string,stringprep,struct,subprocess,sunau,symtable,sys,sysconfig,syslog,tabnanny,tarfile,telnetlib,tempfile,termios,textwrap,this,threading,time,timeit,tkinter,token,tokenize,trace,traceback,tracemalloc,tty,turtle,turtledemo,types,typing,unicodedata,unittest,urllib,uu,uuid,venv,warnings,wave,weakref,webbrowser,winreg,winsound,wsgiref,xdrlib,xml,xmlrpc,zipapp,zipfile,zipimport,zlib,zoneinfo"
+
 SandboxRestrictions.passthrough_modules_maximum = (
     SandboxRestrictions.passthrough_modules_with_temporal
+    # All stdlib modules except "sys" and their children. Children are not
+    # listed in stdlib names but we need them because in some cases (e.g. os
+    # manually setting sys.modules["os.path"]) they have certain child
+    # expectations.
+    + [
+        self_and_children_pattern(m)
+        for m in _stdlib_module_names.split(",")
+        if m != "sys"
+    ]
 )
-# TODO(cretz): Fix to maximum when with-temporal fixed
+
 SandboxRestrictions.passthrough_modules_default = (
-    SandboxRestrictions.passthrough_modules_minimum
+    SandboxRestrictions.passthrough_modules_maximum
 )
 
 SandboxRestrictions.default = SandboxRestrictions(
@@ -201,6 +223,11 @@ class _WorkflowInstanceImpl(WorkflowInstance):
             f"from {det.defn.cls.__module__} import {det.defn.cls.__name__} as __temporal_workflow_class\n"
             f"from {runner._runner_class.__module__} import {runner._runner_class.__name__} as __temporal_runner_class\n"
             "import asyncio\n"
+            # We are importing the top-level temporalio.bridge.worker here
+            # because there are technically things we need from the bridge that
+            # are not in scope (e.g. the PollShutdownError) but we want them
+            # loaded
+            "import temporalio.bridge.worker\n"
             "__temporal_task = asyncio.create_task(__temporal_instance._sandboxed_create_instance(__temporal_runner_class, __temporal_workflow_class))\n"
         )
         # Wait on creation to complete
@@ -311,7 +338,7 @@ class _WorkflowInstanceImpl(WorkflowInstance):
                         parent,
                         name,
                     )
-                    importlib.__import__(parent, globals, locals)
+                    self._sandboxed_import(parent, globals, locals)
 
                 # Just set the module
                 _trace("Passing module %s through from host", name)

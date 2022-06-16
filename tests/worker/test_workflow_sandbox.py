@@ -1,13 +1,36 @@
+import asyncio
+import dataclasses
+import sys
 import uuid
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional, Type
 
+import pytest
+
+import temporalio.worker.workflow_sandbox
 from temporalio import workflow
 from temporalio.client import Client
 from temporalio.exceptions import ApplicationError
-from temporalio.worker import SandboxedWorkflowRunner, UnsandboxedWorkflowRunner, Worker
+from temporalio.worker import (
+    SandboxedWorkflowRunner,
+    SandboxRestrictions,
+    UnsandboxedWorkflowRunner,
+    Worker,
+)
+from temporalio.worker.workflow_instance import WorkflowRunner
 from tests.worker import stateful_module
 from tests.worker.test_workflow import assert_eq_eventually
+
+
+def test_workflow_sandbox_stdlib_module_names():
+    if sys.version_info < (3, 10):
+        pytest.skip("Test only runs on 3.10")
+    actual_names = ",".join(sorted(sys.stdlib_module_names))
+    # TODO(cretz): Point releases may add modules :-(
+    assert (
+        actual_names == temporalio.worker.workflow_sandbox._stdlib_module_names
+    ), f"Expecting names as {actual_names}"
+
 
 global_state = ["global orig"]
 
@@ -41,8 +64,23 @@ class GlobalStateWorkflow:
         return {"global": global_state, "module": stateful_module.module_state}
 
 
-async def test_workflow_sandbox_global_state(client: Client):
-    async with new_worker(client, GlobalStateWorkflow) as worker:
+@pytest.mark.parametrize(
+    "sandboxed_passthrough_modules",
+    [
+        SandboxRestrictions.passthrough_modules_minimum,
+        SandboxRestrictions.passthrough_modules_with_temporal,
+        SandboxRestrictions.passthrough_modules_maximum,
+    ],
+)
+async def test_workflow_sandbox_global_state(
+    client: Client,
+    sandboxed_passthrough_modules: temporalio.worker.workflow_sandbox.Patterns,
+):
+    async with new_worker(
+        client,
+        GlobalStateWorkflow,
+        sandboxed_passthrough_modules=sandboxed_passthrough_modules,
+    ) as worker:
         # Run it twice sandboxed and check that the results don't affect each
         # other
         handle1 = await client.start_workflow(
@@ -91,6 +129,22 @@ async def test_workflow_sandbox_global_state(client: Client):
         assert global_state == ["global orig"]
         assert stateful_module.module_state == ["module orig"]
 
+bad_global_var = "some var"
+
+@workflow.defn
+class InvalidMemberWorkflow:
+    @workflow.run
+    async def run(self) -> None:
+        # Wait forever
+        await asyncio.Future()
+
+    @workflow.signal
+    def access_bad_global_var(self) -> None:
+        workflow.logger.info(bad_global_var)
+
+async def test_workflow_sandbox_invalid_module_members():
+    # TODO(cretz): Var read, var write, class create, class static access, func calls, class methods, class creation
+    pass
 
 # TODO(cretz): To test:
 # * Invalid modules
@@ -104,13 +158,19 @@ def new_worker(
     activities: Iterable[Callable] = [],
     task_queue: Optional[str] = None,
     sandboxed: bool = True,
+    sandboxed_passthrough_modules: Optional[
+        temporalio.worker.workflow_sandbox.Patterns
+    ] = None,
 ) -> Worker:
+    restrictions = SandboxRestrictions.default
+    if sandboxed_passthrough_modules:
+        restrictions = dataclasses.replace(restrictions, passthrough_modules=sandboxed_passthrough_modules)
     return Worker(
         client,
         task_queue=task_queue or str(uuid.uuid4()),
         workflows=workflows,
         activities=activities,
-        workflow_runner=SandboxedWorkflowRunner()
+        workflow_runner=SandboxedWorkflowRunner(restrictions=restrictions)
         if sandboxed
         else UnsandboxedWorkflowRunner(),
     )
